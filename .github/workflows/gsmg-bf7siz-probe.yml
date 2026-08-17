@@ -1,0 +1,42 @@
+name: Temporary GSMG bf7siz exact-ID probe
+
+on:
+  push:
+    branches:
+      - agent/gsmg-bf7siz-probe
+    paths:
+      - '.github/workflows/gsmg-bf7siz-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query exact Reddit submission from independent public APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, urllib.request
+          urls = [
+            ('arctic_shift','https://arctic-shift.photon-reddit.com/api/posts/ids?ids=bf7siz'),
+            ('pullpush','https://api.pullpush.io/reddit/search/submission/?ids=bf7siz'),
+          ]
+          results = {}
+          for name, url in urls:
+              try:
+                  req = urllib.request.Request(url, headers={'User-Agent':'gsmg-historical-object-probe/1.0'})
+                  with urllib.request.urlopen(req, timeout=45) as r:
+                      raw = r.read()
+                  results[name] = {'ok': True, 'bytes': len(raw), 'data': json.loads(raw)}
+              except Exception as e:
+                  results[name] = {'ok': False, 'error': repr(e)}
+          print('GSMG_BF7SIZ_RECEIPT_BEGIN')
+          print(json.dumps(results, ensure_ascii=False, separators=(',',':')))
+          print('GSMG_BF7SIZ_RECEIPT_END')
+          if not any(v.get('ok') for v in results.values()):
+              raise SystemExit('Both exact-ID APIs failed')
+          PY
