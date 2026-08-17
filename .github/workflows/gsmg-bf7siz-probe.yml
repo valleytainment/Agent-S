@@ -1,4 +1,4 @@
-name: Temporary GSMG Twitter April-19 metadata probe
+name: Temporary GSMG Reddit Common Crawl probe
 
 on:
   push:
@@ -13,23 +13,48 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     steps:
-      - name: Inspect exact April-19 Twitter stream file
+      - name: Probe pre-edit Reddit Common Crawl objects and preview cache
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json,urllib.request
-          req=urllib.request.Request('https://archive.org/metadata/archiveteam-twitter-stream-2019-04',headers={'User-Agent':'gsmg-historical-object-probe/1.5'})
-          with urllib.request.urlopen(req,timeout=30) as r: meta=json.load(r)
-          files=[]
-          for f in meta.get('files',[]):
-              name=f.get('name','')
-              if '2019_04_19' in name or '2019-04-19' in name:
-                  files.append({k:f.get(k) for k in ['name','size','md5','sha1','crc32','mtime','format','source']})
-          print('GSMG_TWITTER_APRIL19_RECEIPT_BEGIN')
-          print(json.dumps({'identifier':meta.get('metadata',{}).get('identifier'),'file_count':len(meta.get('files',[])),'april19_files':files},separators=(',',':')))
-          print('GSMG_TWITTER_APRIL19_RECEIPT_END')
-          if not files: raise SystemExit('No April-19 file found in item metadata')
+          import gzip, hashlib, io, json, re, urllib.parse, urllib.request
+          from PIL import Image
+          UA={'User-Agent':'gsmg-historical-object-probe/1.6'}
+          def get(url,headers=None,timeout=30):
+              h=dict(UA); h.update(headers or {})
+              req=urllib.request.Request(url,headers=h)
+              with urllib.request.urlopen(req,timeout=timeout) as r:return r.read(),dict(r.headers)
+          post='https://www.reddit.com/r/bitcoinpuzzles/comments/bf7siz/gsmgio_5_btc_puzzle_challenge/'
+          variants=[post,post.replace('www.reddit.com','old.reddit.com'),post.replace('www.reddit.com','reddit.com')]
+          out={'hits':[],'bodies':[]}
+          for idx in ['CC-MAIN-2019-18','CC-MAIN-2019-22','CC-MAIN-2019-26']:
+              for u in variants:
+                  q=f'https://index.commoncrawl.org/{idx}-index?'+urllib.parse.urlencode({'url':u,'output':'json','filter':'status:200'})
+                  try:
+                      raw,_=get(q,timeout=20)
+                      for line in raw.splitlines():
+                          if line.strip():
+                              o=json.loads(line);o['_index']=idx;out['hits'].append({k:o.get(k) for k in ['_index','timestamp','url','status','mime','digest','length','offset','filename']})
+                              if o.get('timestamp','99999999999999')<'20190605000000':
+                                  try:
+                                      off=int(o['offset']);ln=int(o['length'])
+                                      rec,_=get('https://data.commoncrawl.org/'+o['filename'],headers={'Range':f'bytes={off}-{off+ln-1}'},timeout=60)
+                                      warc=gzip.decompress(rec)
+                                      parts=warc.split(b'\r\n\r\n',2);body=parts[2] if len(parts)>=3 else warc
+                                      urls=sorted(set(x.decode('utf-8','replace') for x in re.findall(rb'https?://[^\"\'<>\\ ]+',body)))
+                                      media=[x for x in urls if any(t in x.lower() for t in ['i.redd.it','preview.redd.it','external-preview.redd.it','.jpg','.jpeg','.png','imgur'])]
+                                      out['bodies'].append({'index':idx,'timestamp':o['timestamp'],'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest(),'media_urls':media[:200]})
+                                  except Exception as e: out['bodies'].append({'index':idx,'timestamp':o.get('timestamp'),'error':repr(e)})
+                  except Exception as e: out['hits'].append({'index':idx,'url':u,'error':repr(e)})
+          preview='https://external-preview.redd.it/th-Jqx5EtlVEFKjVhEH6Nsbn5Qg96KlJe2AmPXYrpso.jpg?auto=webp&s=b21d3db598743a568a801beb681732448ef6817e'
+          try:
+              b,h=get(preview,timeout=30); im=Image.open(io.BytesIO(b))
+              out['external_preview']={'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest(),'content_type':h.get('Content-Type'),'format':im.format,'size':list(im.size),'mode':im.mode}
+          except Exception as e: out['external_preview_error']=repr(e)
+          print('GSMG_CC_REDDIT_RECEIPT_BEGIN')
+          print(json.dumps(out,ensure_ascii=False,separators=(',',':')))
+          print('GSMG_CC_REDDIT_RECEIPT_END')
           PY
